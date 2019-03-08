@@ -1,76 +1,57 @@
-"""
-The MIT License (MIT)
-
-Copyright (c) 2016 Ilhan Polat
-
-Permission is hereby granted, free of charge, to any person obtaining a copy
-of this software and associated documentation files (the "Software"), to deal
-in the Software without restriction, including without limitation the rights
-to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-copies of the Software, and to permit persons to whom the Software is
-furnished to do so, subject to the following conditions:
-
-The above copyright notice and this permission notice shall be included in
-all copies or substantial portions of the Software.
-
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
-THE SOFTWARE.
-"""
-
 import numpy as np
 import warnings
-from numpy import zeros_like, kron, ndarray
-from scipy.linalg import eigvals, block_diag, qz, norm
+from numpy import zeros_like, kron, ndarray, zeros, exp
+from numpy.random import rand, choice
+from numpy.linalg.linalg import _assertNdSquareness
+from scipy.linalg import (eigvals, svdvals, block_diag, qz, norm, solve, expm,
+                          inv, LinAlgError)
+from scipy.linalg.decomp import _asarray_validated
+from scipy.stats import ortho_group
 from tabulate import tabulate
 from itertools import zip_longest, chain
 
 from ._polynomial_ops import (haroldpoly, haroldpolyadd, haroldpolydiv,
                               haroldpolymul, haroldcompanion, haroldlcm)
 
-from ._aux_linalg import e_i, haroldsvd
+from ._aux_linalg import haroldsvd
 from ._global_constants import _KnownDiscretizationMethods
 from copy import deepcopy
 
 __all__ = ['Transfer', 'State', 'state_to_transfer', 'transfer_to_state',
-           'transmission_zeros', 'concatenate_state_matrices']
+           'transmission_zeros', 'random_state_model',
+           'concatenate_state_matrices']
 
 
 class Transfer:
     """
-
-    Transfer() is a system representation class.
-
-    For SISO system creation, 1D lists or 1D numpy arrays are expected,
-    e.g.,::
-
-        >>> G = Transfer(1,[1,2,1])
-
-    For MIMO systems, the array like objects are expected to be inside the
-    appropriate shaped list of lists ::
-
-        >>> G = Transfer([[ [1,3,2], [1,3] ],
-        ...               [   [1]  , [1,0] ]],# end of num
-        ...              [[ [1,2,1] ,  [1,3,3]  ],
-        ...               [ [1,0,0] , [1,2,3,4] ]])
-
-    If the denominator is common then the denominator can be given as a single
-    array like object.
-
-        >>> G = Transfer([[ [1,3,2], [1,3] ],
-        ...               [   [1]  , [1,0] ]],# end of num
-        ...              [1, 2, 3, 4, 5]) # common den
-
-    Setting  SamplingPeriod property to 'False' value to the will make
-    the system continous time again and relevant properties are reset
-    to continuous-time properties.
+    A class for creating Transfer functions.
     """
     def __init__(self, num, den=None, dt=None):
+        """
+        For SISO models, 1D lists or 1D numpy arrays are expected, e.g.,::
 
+            >>> G = Transfer(1,[1,2,1])
+
+        For MIMO systems, the array like objects are expected to be inside the
+        appropriate shaped list of lists ::
+
+            >>> G = Transfer([[ [1,3,2], [1,3] ],
+            ...               [   [1]  , [1,0] ]],# end of num
+            ...              [[ [1,2,1] ,  [1,3,3]  ],
+            ...               [ [1,0,0] , [1,2,3,4] ]])
+
+        If the denominator is common then the denominator can be given as a
+        single array like object.
+
+            >>> G = Transfer([[ [1,3,2], [1,3] ],
+            ...               [   [1]  , [1,0] ]],# end of num
+            ...              [1, 2, 3, 4, 5]) # common den
+
+        Setting  ``SamplingPeriod`` property to ``'None'`` will make the
+        system continuous time again and relevant properties are reset
+        to continuous-time properties. However the numerical data will still
+        be the same.
+        """
         # Initialization Switch and Variable Defaults
 
         self._isgain = False
@@ -123,7 +104,7 @@ class Transfer:
     def SamplingSet(self):
         """
         If this property is called ``G.SamplingSet`` then returns the
-        set ``Z`` or ``R`` for discrete and continous models respectively.
+        set ``Z`` or ``R`` for discrete and continuous models respectively.
         This is a read only property and cannot be set. Instead an appropriate
         setting should be given to the ``SamplingPeriod`` property.
         """
@@ -164,7 +145,7 @@ class Transfer:
         """
         This property is used internally to keep track of (if applicable)
         the original method used for discretization. It is used by the
-        ``undiscretize()`` function to reach back to the continous model that
+        ``undiscretize()`` function to reach back to the continuous model that
         would hopefully minimize the discretization errors. It is also
         possible to manually set this property such that ``undiscretize``
         uses the provided method.
@@ -270,16 +251,9 @@ class Transfer:
                                  ' it. Discretize the model first via '
                                  '"discretize" function.')
             else:
-                if value == 'lft':
-                    self._DiscretizedWith = value
-                    print('\"lft\" method also needs an interconnection'
-                          ' matrix. Please don\'t forget to set the '
-                          '\"DiscretizationMatrix\" property as well')
-                else:
-                    self._DiscretizedWith = value
+                self._DiscretizedWith = value
         else:
-            raise ValueError('Excuse my ignorance but I don\'t know '
-                             'that method.')
+            raise ValueError('The {} method is unknown.'.format(value))
 
     @DiscretizationMatrix.setter
     def DiscretizationMatrix(self, value):
@@ -418,10 +392,8 @@ class Transfer:
                     # Same as SISO but over all rows/cols
                     for row in range(self._p):
                         for col in range(self._m):
-                            lcm, mults = haroldlcm(
-                                            self._den[row][col],
-                                            other.den[row][col]
-                                            )
+                            lcm, mults = haroldlcm(self._den[row][col],
+                                                   other.den[row][col])
 
                             newnum[row][col] = np.atleast_2d(
                                     haroldpolyadd(
@@ -444,8 +416,7 @@ class Transfer:
                                 nonzero_num[row, col] = True
 
                     if any(nonzero_num.ravel()):
-                        return Transfer(newnum, newden,
-                                        dt=self._dt)
+                        return Transfer(newnum, newden, dt=self._dt)
                     else:
                         # Numerators all cancelled to zero hence 0-gain MIMO
                         return Transfer(np.zeros(self._shape).tolist())
@@ -454,8 +425,8 @@ class Transfer:
 
         # Last chance for matrices, convert to static gain matrices and add
         elif isinstance(other, (int, float)):
-            return Transfer((other * np.ones(self._shape)).tolist(),
-                            dt=self._dt) + self
+            return self + Transfer((other * np.ones(self._shape)).tolist(),
+                                   dt=self._dt)
 
         elif isinstance(other, np.ndarray):
             # It still might be a scalar inside an array
@@ -463,7 +434,7 @@ class Transfer:
                 return self + float(other)
 
             if self._shape == other.shape:
-                return self + Transfer(other, dt=self._dt)
+                return self + Transfer(other.tolist(), dt=self._dt)
             else:
                 raise IndexError('Addition of systems requires their '
                                  'shape to match but the system shapes '
@@ -538,6 +509,7 @@ class Transfer:
                         else:
                             newnum[row][col] = arr[row, col]*self._num
                             newden[row][col] = self._den
+
                 return Transfer(newnum, newden, dt=self._dt)
 
             # Reminder: This is elementwise multiplication not __matmul__!!
@@ -661,17 +633,49 @@ class Transfer:
         return self * other
 
     def __truediv__(self, other):
+        """Support for G / ...
+
+        """
         # For convenience of scaling the system via G/5 and so on.
-        # Otherwise reject.
-        if isinstance(other, (int, float)):
-            return self * (1/other)
-        else:
-            raise ValueError('Currently, division operation for Transfer '
-                             'representations are limited to real scalars.')
+        return self @ (1/other)
 
     def __rtruediv__(self, other):
-        raise ValueError('Currently, right division operation for Transfer '
-                         'representations are not supported.')
+        """ Support for division .../G
+
+        """
+        if self._isSISO:
+            numdeg, dendeg = self.num.size, self.den.size
+            if numdeg != dendeg:
+                raise ValueError('Inverse of the system is noncausal which '
+                                 'is not supported.')
+            else:
+                return other * Transfer(self.den, self.num, dt=self._dt)
+
+        if not np.equal(*self._shape):
+            raise ValueError('Nonsquare systems cannot be inverted')
+
+        a, b, c, d = transfer_to_state((self._num, self._den),
+                                       output='matrices')
+
+        if np.any(svdvals(d) < np.spacing(1.)):
+            raise LinAlgError('The feedthrough term of the system is not'
+                              ' invertible.')
+        else:
+            # A-BD^{-1}C | BD^{-1}
+            # -----------|--------
+            # -D^{-1}C   | D^{-1}
+            if self._isgain:
+                ai, bi, ci = a, b, c
+            else:
+                ai = a - b @ solve(d, c)
+                bi = (solve(d.T, b.T)).T
+                ci = -solve(d, c)
+            di = inv(d)
+
+            num_inv, den_inv = state_to_transfer((ai, bi, ci, di),
+                                                 output='polynomials')
+
+            return other * Transfer(num_inv, den_inv, dt=self._dt)
 
     def __matmul__(self, other):
         # @-multiplication has the following rationale, first two items
@@ -697,9 +701,9 @@ class Transfer:
                 return self*float(other)
 
             if other.ndim == 1:
-                arr = np.atleast_2d(other.real)
+                arr = np.atleast_2d(other.real).astype(float)
             else:
-                arr = other.real
+                arr = other.real.astype(float)
 
             if not self._m == arr.shape[0]:
                 raise ValueError(f'Size mismatch: Transfer representation '
@@ -708,18 +712,24 @@ class Transfer:
 
             # If self is gain, this is just matrix multiplication
             if self._isgain:
-                return Transfer(self.to_array() @ arr,
-                                dt=self._dt)
+                return Transfer(self.to_array() @ arr, dt=self._dt)
 
             tp, tm = self._shape[0], arr.shape[1]
+
             newnum = [[None]*tm for n in range(tp)]
             newden = [[None]*tm for n in range(tp)]
 
             for r in range(tp):
                 for c in range(tm):
-                    t_G = sum(*(self[r]*arr[:, c]))
-                    newnum[tp][tm] = t_G.num
-                    newden[tp][tm] = t_G.den
+                    t_G = Transfer(0, 1, dt=self._dt)
+                    for ind in range(self._m):
+                        t_G += self[r, ind] * other[ind, [c]]
+                    newnum[r][c] = t_G.num
+                    newden[r][c] = t_G.den
+
+            if (tp, tm) == (1, 1):
+                newnum = newnum[0][0]
+                newden = newden[0][0]
 
             return Transfer(newnum, newden, dt=self.SamplingPeriod)
 
@@ -789,7 +799,7 @@ class Transfer:
             else:
                 arr = other.real
 
-            return Transfer(arr, self._dt) @ self
+            return Transfer(arr.tolist(), self._dt) @ self
 
         elif isinstance(other, (int, float)):
             return self * other
@@ -838,7 +848,7 @@ class Transfer:
     def __repr__(self):
         p, m = self.NumberOfOutputs, self.NumberOfInputs
         if self.SamplingSet == 'R':
-            desc_text = 'Continous-Time Transfer function\n'
+            desc_text = 'Continuous-Time Transfer function\n'
         else:
             desc_text = ('Discrete-Time Transfer function with '
                          'sampling time: {0:.3f} ({1:.3f} Hz.)\n'
@@ -1263,7 +1273,8 @@ class Transfer:
                         print('Denominator is MIMO, Numerator is SISO')
                     # We have to check noncausal entries
                     # flatten den list of lists and compare the size
-                    num_deg = np.trim_zeros(returned_numden_list[0], 'f').size
+                    num_deg = np.trim_zeros(returned_numden_list[0][0],
+                                            'f').size
 
                     flattened_den = sum(returned_numden_list[1], [])
 
@@ -1428,23 +1439,25 @@ class Transfer:
 
 class State:
     """
-    State() is a system representation class.
-
-    A State object can be instantiated in a straightforward manner by
-    entering array like objects.::
-
-        >>> G = State([[0, 1], [-4, -5]], [[0], [1]], [[1, 0]], 1)
-
-    For zero feedthrough (strictly proper) models, "d" matrix can be skipped
-    and will be replaced with the zeros array whose shape is inferred from
-    the rows/columns of "c"/"b" arrays.
-
-    Setting  SamplingPeriod property to 'False' value to the will make
-    the system continous time again and relevant properties are reset
-    to continuous-time properties.
+    A class for creating State space models.
     """
     def __init__(self, a, b=None, c=None, d=None, dt=None):
+        """
+        A State object can be instantiated in a straightforward manner by
+        entering arraylikes.::
 
+            >>> G = State([[0, 1], [-4, -5]], [[0], [1]], [1, 0], 1)
+
+        For zero feedthrough (strictly proper) models, "d" matrix can be
+        skipped and will be replaced with the zeros array whose shape is
+        inferred from the rows/columns of "c"/"b" arrays.
+
+        Setting  ``SamplingPeriod`` property to ``'None'`` will make the
+        system continuous time again and relevant properties are reset
+        to continuous-time properties. However the numerical data will still
+        be the same.
+
+        """
         self._dt = False
         self._DiscretizedWith = None
         self._DiscretizationMatrix = None
@@ -1517,7 +1530,7 @@ class State:
     def SamplingSet(self):
         """
         If this property is called ``G.SamplingSet`` then returns the
-        set ``Z`` or ``R`` for discrete and continous models respectively.
+        set ``Z`` or ``R`` for discrete and continuous models respectively.
         This is a read only property and cannot be set. Instead an appropriate
         setting should be given to the ``SamplingPeriod`` property.
         """
@@ -1564,7 +1577,7 @@ class State:
         """
         This property is used internally to keep track of (if applicable)
         the original method used for discretization. It is used by the
-        ``undiscretize()`` function to reach back to the continous model that
+        ``undiscretize()`` function to reach back to the continuous model that
         would hopefully minimize the discretization errors. It is also
         possible to manually set this property such that ``undiscretize``
         uses the provided method.
@@ -1614,7 +1627,7 @@ class State:
 
         .. note:: SciPy actually uses a variant of this LFT
             representation as given in the paper of `Zhang et al.
-            <http://dx.doi.org/10.1080/00207170802247728>`_
+            :doi:`10.1080/00207170802247728>`
 
         """
         return self._DiscretizationMatrix
@@ -2203,7 +2216,7 @@ class State:
                     mat = s @ self.to_array()
                 except ValueError:
                     # 1
-                    mat = self.to_array * s
+                    mat = self.to_array() * s
                 return State(mat, dt=self._dt)
 
             elif self._isSISO:
@@ -2246,17 +2259,36 @@ class State:
                              ''.format(type(other).__qualname__))
 
     def __truediv__(self, other):
-        # For convenience of scaling the system via G/5 and so on.
-        # Otherwise reject.
-        if isinstance(other, (int, float)):
-            return self @ (1/other)
-        else:
-            raise ValueError('Currently, division operation for State '
-                             'representations are limited to real scalars.')
+        """ Support for division G/...
+
+        """
+        return self @ (1/other)
 
     def __rtruediv__(self, other):
-        raise ValueError('Currently, right division operation for State '
-                         'representations are not supported.')
+        """ Support for division .../G
+
+        """
+        if not np.equal(*self._shape):
+            raise ValueError('Nonsquare systems cannot be inverted')
+
+        a, b, c, d = self._a, self._b, self._c, self._d
+
+        if np.any(svdvals(d) < np.spacing(1.)):
+            raise LinAlgError('The feedthrough term of the system is not'
+                              ' invertible.')
+        else:
+            # A-BD^{-1}C | BD^{-1}
+            # -----------|--------
+            # -D^{-1}C   | D^{-1}
+            if self._isgain:
+                ai, bi, ci = None, None, None
+            else:
+                ai = a - b @ solve(d, c)
+                bi = (solve(d.T, b.T)).T
+                ci = -solve(d, c)
+            di = inv(d)
+
+            return other @ State(ai, bi, ci, di, dt=self._dt)
 
     def __getitem__(self, num_or_slice):
 
@@ -2300,9 +2332,9 @@ class State:
     def __repr__(self):
         p, m, n = self._p, self._m, self.NumberOfStates
         if self._rz == 'R':
-            desc_text = '\n Continous-time state represantation\n'
+            desc_text = '\nContinuous-time state representation\n'
         else:
-            desc_text = ('Discrete-Time state representation with '
+            desc_text = ('\nDiscrete-Time state representation with '
                          'sampling time: {0:.3f} ({1:.3f} Hz.)\n'
                          ''.format(float(self.SamplingPeriod),
                                    1/float(self.SamplingPeriod)))
@@ -2392,7 +2424,7 @@ class State:
             if abcd is None:
                 if verbose:
                     print('{0} is None'.format(entrytext[abcd_index]))
-                returned_abcd_list[abcd_index] = np.array([])
+                returned_abcd_list[abcd_index] = np.empty((0,0))
                 None_flags[abcd_index] = True
                 continue
 
@@ -2494,129 +2526,6 @@ class State:
             return a, b, c, d, d.shape, Gain_flag
 
 
-def _investigate_other(self_, other_, method_):
-    '''
-    This helper function checks the argument of the dunder arithmetic
-    methods of State and Transfer classes, such as __mul__(), __add__()
-    etc. and returns informative flags for quick branching.
-
-    Concise two character flag logic (but passed as an integer):
-        '##'
-         ||__ 1 for dynamic, 0 for static models
-         |___ 1 for MIMO, 0 for SISO models
-    hence
-        0 is SISO static gain
-        1 is SISO dynamic model
-        2 is MIMO static gain
-        3 is MIMO dynamic model
-       -1 is numpy.ndarray
-
-    Parameters
-    ----------
-    self_ : State, Transfer
-        State or Transfer instance for which the dunder method is called.
-
-    other_ : object
-        object to be recognized.
-
-    method_ : str
-        Method specifier for proper size checks and error messages
-
-    Returns
-    -------
-
-    '''
-    msg_dict = {'add': 'addition',
-                'mul': 'elementwise multiplication',
-                'matmul': 'right multiplication',
-                'radd': 'left addition',
-                'rmul': 'elementwise multiplication',
-                'rmatmul': 'left multiplication'}
-
-    # Massage possible real valued complex objects to reals
-    if np.iscomplexobj(other_):
-        # Fine check further
-        if hasattr(other_, 'imag'):
-            if np.any(other_.imag):
-                raise ValueError('Complex valued models are not supported.')
-            else:
-                other_ = other_.real
-        else:
-            # Numpy thinks it's a complex object so probably it is array_like
-            other_ = np.array(other_, ndmin=2)
-            if np.any(other_.imag):
-                raise ValueError('Complex valued models are not supported.')
-            else:
-                other_ = other_.real
-
-    # Check for allowed objects
-    if not isinstance(other_, (int, float, np.ndarray, State, Transfer)):
-        raise ValueError('I don\'t know how to perform {0} of {1} and'
-                         ' {2} types.'.format(msg_dict[method_],
-                                              type(self_).__qualname__,
-                                              type(other_).__qualname__)
-                         )
-    # check and forgive size-1 arrays
-    if isinstance(other_, np.ndarray):
-        if other_.ndim == 1:
-            try:
-                other_ = np.atleast_2d(other_).astype(float)
-            except ValueError:
-                raise ValueError('Operand could not be casted to float dtype')
-        elif other_.ndim > 2:
-            raise ValueError('For {0}, the operand dimension must be at '
-                             'most 2d but got a {1}d-array.'
-                             ''.format(msg_dict[method_], other_.ndim))
-        elif other_.size == 1:
-            other_ = float(other_)
-        else:
-            other_ = other_.astype(float)
-        # Reject if the size don't match
-        if method_ in ('add', 'mul'):
-            shape_1 = self_.shape
-            shape_2 = other_.shape
-        else:
-            shape_1 = self_.shape[1]
-            shape_2 = other_.shape[0]
-
-        if shape_1 != shape_2:
-            raise ValueError('For {0}, model shapes don\'t match. The shapes'
-                             ' are {1} vs. {2}'.format(msg_dict[method_],
-                                                       self_.shape,
-                                                       other_.shape)
-                             )
-        other_type = -1
-
-    if isinstance(other_, (int, float)):
-        other_ = np.atleast_2d(other_).astype(float)
-        other_type = -1
-
-    if isinstance(other_, (State, Transfer)):
-
-        if not self_.SamplingPeriod == other_.SamplingPeriod:
-            raise ValueError('The sampling periods of the models don\'t match '
-                             'for {0}.'.format(msg_dict[method_]))
-
-        # Reject if the size don't match
-        if method_ in ('add', 'mul'):
-            shape_1 = self_.shape
-            shape_2 = other_.shape
-        else:
-            shape_1 = self_.shape[1]
-            shape_2 = other_.shape[0]
-
-        if shape_1 != shape_2:
-            raise ValueError('For {0}, model shapes don\'t match. The shapes'
-                             ' are {1} vs. {2}'.format(msg_dict[method_],
-                                                       self_.shape,
-                                                       other_.shape)
-                             )
-
-        other_type = 2 * (not other_._isSISO) + (not other_._isgain)
-
-    return other_, other_type
-
-
 def _pole_properties(poles, dt=None, output_data=False):
     '''
     This function provides the natural frequency, damping and time constant
@@ -2627,6 +2536,8 @@ def _pole_properties(poles, dt=None, output_data=False):
     ----------
     poles : ndarray
         Poles of the system representation. p must be a 1D array.
+    dt : float
+        Sampling period for discrete-time poles.
 
     Returns
     -------
@@ -2658,7 +2569,7 @@ def _pole_properties(poles, dt=None, output_data=False):
     if n == 0:
         return None
     freqn = np.empty_like(p, dtype=float)
-    damp = np.empty_like(p, dtype=float)\
+    damp = np.empty_like(p, dtype=float)
 
     # Check for pure integrators
     if dt is not None:  # Discrete
@@ -2678,63 +2589,70 @@ def _pole_properties(poles, dt=None, output_data=False):
     return np.c_[poles.copy(), freqn, damp]
 
 
-def state_to_transfer(*state_or_abcd, output='system'):
+def state_to_transfer(state_or_abcd, output='system'):
     """
-    Given a State() object or a tuple of A,B,C,D array-likes, converts
-    the argument into the transfer representation. The output can be
-    selected as a Transfer() object or the numerator, denominator pair if
-    'output' keyword is given with the option 'polynomials'.
+    Converts a :class:`State` to a :class:`Transfer`
 
-    If the input is a Transfer() object it returns the argument with no
+    If the input is a :class:`Transfer` object it returns the argument with no
     modifications.
 
-    The algorithm is Varga,Sima 1981 which can be summarized as iterating
-    over every row/cols of B and C to get SISO Transfer representations
-    via c*(sI-A)^(-1)*b+d.
+    The algorithm [1]_ can be summarized as iterating over every row/columns
+    of C/B to get SISO Transfer representations via :math:`c(sI-A)^{-1}b+d`.
 
     Parameters
     ----------
-    state_or_abcd : State() or a tuple of A,B,C,D matrices.
+    state_or_abcd : State, tuple
+
     output : str
-        Selects whether a State() object or individual numerator, denominator
+        Selects whether a State object or individual numerator, denominator
         will be returned via the options ``'system'``,``'polynomials'``.
 
     Returns
     -------
-    G : Transfer
-        If ``output`` keyword is set to 'system'
-    num : {List of lists of 2D-numpy arrays for MIMO case,
-              2D-Numpy arrays for SISO case}
-        If the ``output`` keyword is set to ``polynomials``
-    den : Same as num
+    G : Transfer, tuple
+        If ``output`` keyword is set to ``'system'`` otherwise a 2-tuple of
+        ndarrays is returned as ``num`` and ``den`` if the ``output`` keyword
+        is set to ``'polynomials'``
+
+    References
+    ----------
+    .. [1] Varga, Sima, 1981, :doi:`10.1080/00207178108922980`.
 
     """
     # FIXME : Resulting TFs are not minimal per se. simplify them, maybe?
 
-    if output.lower() not in ('system', 'polynomials'):
+    if output.lower() not in ('system', 'polynomials', 's', 'p'):
         raise ValueError('The "output" keyword can either be "system" or '
                          '"polynomials". I don\'t know any option as '
                          '"{0}"'.format(output))
 
+    output = output.lower()[0]
     # If a discrete time system is given this will be modified to the
     # SamplingPeriod later.
-    ZR = None
-    system_given, validated_matrices = _state_or_abcd(state_or_abcd[0], 4)
+    dt = None
+    system_given = isinstance(state_or_abcd, State)
 
     if system_given:
-        A, B, C, D = state_or_abcd[0].matrices
-        p, m = state_or_abcd[0].shape
-        it_is_gain = state_or_abcd[0]._isgain
-        ZR = state_or_abcd[0].SamplingPeriod
+        A, B, C, D = state_or_abcd.matrices
+        p, m = state_or_abcd.shape
+        it_is_gain = state_or_abcd._isgain
+        dt = state_or_abcd.SamplingPeriod
     else:
-        A, B, C, D, (p, m), it_is_gain = State.validate_arguments(
-                                                    *validated_matrices)
-        ZR = None
+        try:
+            A, B, C, D = state_or_abcd
+            it_is_gain = True if all([x.size == 0 for x in
+                                      [A, B, C]]) else False
+
+        except ValueError:
+            # probably static gain
+            A, B, C, D = None, None, None, state_or_abcd[0]
+            it_is_gain = True
+        p, m = D.shape
 
     if it_is_gain:
-        if output.lower() is 'polynomials':
+        if output == 'p':
             return D, np.ones_like(D)
-        return Transfer(D, dt=ZR)
+        return Transfer(D, dt=dt)
 
     n = A.shape[0]
 
@@ -2752,60 +2670,61 @@ def state_to_transfer(*state_or_abcd, output='system'):
 
             b = B[:, colind:colind+1]
             c = C[rowind:rowind+1, :]
-            # zz might contain noisy imaginary numbers but since
-            # the result should be a real polynomial, we can get
-            # away with it (on paper)
+            # zz might contain noisy imaginary numbers but since the result
+            # should be a real polynomial, we should be able to get away
+            # with it
 
             zz = transmission_zeros(A, b, c, np.array([[0]]))
 
             # For finding k of a G(s) we compute
-            #          pole polynomial evaluated at s0
-            # G(s0) * ---------------------------------
-            #          zero polynomial evaluated at s0
+            #          pole polynomial evaluated at some s0
+            # G(s0) * --------------------------------------
+            #          zero polynomial evaluated at some s0
             # s0 : some point that is not a pole or a zero
 
-            # Additional *2 are just some tolerances
+            # Additional factor of 2 are just some tolerances
 
             if zz.size != 0:
-                s0 = max(np.max(np.abs(np.real(np.hstack((pp, zz))))), 1)*2
-            else:
-                s0 = max(np.max(np.abs(np.real(pp))), 1.0)*2
-
-            CAB = c @ np.linalg.lstsq((s0*np.eye(n)-A), b, rcond=-1)[0]
-            if np.size(zz) != 0:
+                s0 = max(np.abs([*pp, *zz]).max(), .5)*2
                 zero_prod = np.real(np.prod(s0*np.ones_like(zz) - zz))
             else:
+                s0 = max(np.abs(pp).max(), .5)*2
                 zero_prod = 1.0  # Not zero!
 
-            pole_prod = np.real(np.prod(s0 - pp))
-
+            CAB = c @ np.linalg.lstsq((s0*np.eye(n)-A), b, rcond=-1)[0]
+            pole_prod = np.prod(s0 - pp).real
             entry_gain = (CAB*pole_prod/zero_prod).flatten()
 
-            # Now, even if there are no zeros (den x DC gain) becomes
+            # Now, even if there are no zeros, den(s) x DC gain becomes
             # the new numerator hence endless fun there
 
             dentimesD = D[rowind, colind] * entry_den
             if zz.size == 0:
                 entry_num = entry_gain
             else:
-                entry_num = np.real(haroldpoly(zz))
+                entry_num = haroldpoly(zz).real
                 entry_num = np.convolve(entry_gain, entry_num)
-
             entry_num = haroldpolyadd(entry_num, dentimesD)
-            num_list[rowind][colind] = np.array(entry_num)
+            if entry_num.size == 0:
+                entry_num = np.array([0.])
+                den_list[rowind][colind] = np.array([[1.]])
+            num_list[rowind][colind] = entry_num[None, :]
 
     # Strip SISO result from List of list and return as arrays.
     if (p, m) == (1, 1):
         num_list = num_list[0][0]
         den_list = den_list[0][0]
 
-    if output.lower() is 'polynomials':
-        return (num_list, den_list)
-    return Transfer(num_list, den_list, ZR)
+    if output == 'p':
+        return num_list, den_list
+
+    return Transfer(num_list, den_list, dt=dt)
 
 
 def transfer_to_state(G, output='system'):
     """
+    Converts a :class:`Transfer` to a :class:`State`
+
     Given a Transfer() object of a tuple of numerator and denominator,
     converts the argument into the state representation. The output can
     be selected as a State() object or the A,B,C,D matrices if 'output'
@@ -2831,7 +2750,7 @@ def transfer_to_state(G, output='system'):
 
     Returns
     -------
-    Gs : State()
+    Gs : State
         If 'output' keyword is set to 'system'
     A,B,C,D : {(nxn),(nxm),(p,n),(p,m)} 2D Numpy-arrays
         If the 'output' keyword is set to 'matrices'
@@ -2866,7 +2785,7 @@ def transfer_to_state(G, output='system'):
     # Arguments should be regularized here.
     # Check if it is just a gain
     if it_is_gain:
-        A, B, C = (np.array([], dtype=float),)*3
+        A, B, C = (np.empty((0, 0)),)*3
         if np.max((m, p)) > 1:
             D = np.empty((m, p), dtype=float)
             for rows in range(p):
@@ -2935,13 +2854,13 @@ def transfer_to_state(G, output='system'):
                     # Case 3: If all cancelled datanum is returned empty
                     if np.count_nonzero(datanum) == 0:
                         D[x, y] = NumOrEmpty
-                        num[x][y] = np.atleast_2d([[0.]])
-                        den[x][y] = np.atleast_2d([[1.]])
+                        num[x][y] = np.array([[0.]])
+                        den[x][y] = np.array([[1.]])
 
                     # Case 1: Proper case
                     else:
                         D[x, y] = NumOrEmpty
-                        num[x][y] = datanum
+                        num[x][y] = np.atleast_2d(datanum)
 
                 # Make the denominator entries monic
                 if den[x][y][0, 0] != 1.:
@@ -2949,21 +2868,22 @@ def transfer_to_state(G, output='system'):
                     den[x][y] = np.array([1/den[x][y][0, 0]])*den[x][y]
 
         # OK first check if the denominator is common in all entries
-        if all([np.array_equal(den[x][y], den[0][0])
-                for x in range(len(den)) for y in range(len(den[0]))]):
+        if all([np.array_equal(den[x][y], den[0][0]) for x in range(p)
+                for y in range(m)]):
 
             # Nice, less work. Off to realization. Decide rows or cols?
             if p >= m:  # Tall or square matrix => Right Coprime Fact.
                 factorside = 'r'
             else:  # Fat matrix, pertranspose the List of Lists => LCF.
                 factorside = 'l'
-                den = [list(i) for i in zip(*den)]
                 num = [list(i) for i in zip(*num)]
                 p, m = m, p
 
+            # Denominator is common pick one
             d = den[0][0].size-1
             A = haroldcompanion(den[0][0])
-            B = np.vstack((np.zeros((A.shape[0]-1, 1)), 1))
+            B = np.zeros((A.shape[0], 1), dtype=float)
+            B[-1, 0] = 1.
             t1, t2 = A, B
 
             for x in range(m-1):
@@ -2974,8 +2894,8 @@ def transfer_to_state(G, output='system'):
             k = 0
             for y in range(m):
                 for x in range(p):
-                    C[x, k:k+num[x][y].size] = num[x][y]
-                k += d  # Shift to the next canonical group position
+                    C[x, k:k+num[x][y].size] = num[x][y][0, ::-1]
+                k += d  # Shift to the next companion group position
 
             if factorside == 'l':
                 A, B, C = A.T, C.T, B.T
@@ -2993,40 +2913,47 @@ def transfer_to_state(G, output='system'):
                 p, m = m, p
 
             coldens = [x for x in zip(*den)]
-            for x in range(m):
-                lcm, mults = haroldlcm(*coldens[x])
-                for y in range(p):
-                    den[y][x] = lcm
-                    num[y][x] = np.atleast_2d(
-                                    haroldpolymul(
-                                        num[y][x].flatten(), mults[y],
-                                        trim_zeros=False
-                                    )
-                                )
+            for col in range(m):
+                lcm, mults = haroldlcm(*coldens[col])
+                for row in range(p):
+                    den[row][col] = lcm
+                    num[row][col] = haroldpolymul(num[row][col][0],
+                                                  mults[row],
+                                                  trim_zeros=False)[None, :]
+
                     # if completely zero, then trim to single entry
-                    num[y][x] = np.atleast_2d(np.trim_zeros(num[y][x][0], 'f'))
+                    # Notice that trim_zeros removes everything if all zero
+                    # Hence work with temporary variable
+                    temp = np.trim_zeros(num[row][col][0], 'f')[None, :]
+                    if temp.size == 0:
+                        num[row][col] = np.array([[0.]])
+                    else:
+                        num[row][col] = temp
 
             coldegrees = [x.size-1 for x in den[0]]
 
-            A = haroldcompanion(den[0][0])
-            B = e_i(A.shape[0], -1)
+            # Make sure that all static columns are handled
+            # Since D is extracted it doesn't matter if denominator is not 1.
+            Alist = []
+            for x in range(m):
+                if den[0][x].size > 1:
+                    Alist += [haroldcompanion(den[0][x])]
+                else:
+                    Alist += [np.empty((0, 0))]
 
-            for x in range(1, m):
-                Atemp = haroldcompanion(den[0][x])
-                Btemp = e_i(Atemp.shape[0], -1)
-
-                A = block_diag(A, Atemp)
-                B = block_diag(B, Btemp)
-
+            A = block_diag(*Alist)
             n = A.shape[0]
-            C = np.zeros((p, n))
+            B = zeros((n, m), dtype=float)
+            C = np.zeros((p, n), dtype=float)
             k = 0
 
-            for y in range(m):
-                for x in range(p):
-                    C[x, k:k+num[x][y].size] = num[x][y][0, ::-1]
+            for col in range(m):
+                if den[0][col].size > 1:
+                    B[sum(coldegrees[:col+1])-1, col] = 1.
 
-                k += coldegrees[y]
+                for row in range(p):
+                    C[row, k:k+num[row][col].size] = num[row][col][0, ::-1]
+                k += coldegrees[col]
 
             if factorside == 'l':
                 A, B, C = A.T, C.T, B.T
@@ -3036,12 +2963,14 @@ def transfer_to_state(G, output='system'):
 
 def transmission_zeros(A, B, C, D):
     """
-    Computes the transmission zeros of a (A,B,C,D) system matrix quartet.
+    Computes the transmission zeros of :class:`State` data arrays ``A``, ``B``,
+    ``C``, ``D``
 
     Parameters
     ----------
     A,B,C,D : ndarray
-        The input data matrices with (nxn), (nxm), (p,n), (p,m) shapes.
+        The input data matrices with ``n x n``, ``n x m``, ``p x n``, ``p x m``
+        shapes.
 
     Returns
     -------
@@ -3051,9 +2980,13 @@ def transmission_zeros(A, B, C, D):
 
     Notes
     -----
-    This is a straightforward implementation of the algorithm of Misra, van
-    Dooren, Varga 1994 but skipping the descriptor matrix which in turn
-    becomes Emami-Naeini, van Dooren 1979.
+    This is a straightforward implementation of [1]_ but via skipping the
+    descriptor matrix which in turn becomes [2]_.
+
+    References
+    ----------
+    .. [1] Misra, van Dooren, Varga, 1994, :doi:`10.1016/0005-1098(94)90052-3`
+    .. [2] Emami-Naeini, van Dooren, 1979, :doi:`10.1016/0005-1098(82)90070-X`
 
     """
     n, (p, m) = A.shape[0], D.shape
@@ -3161,12 +3094,12 @@ def _state_or_abcd(arg, n=4):
 
     Parameters
     ----------
-    arg : State(), tuple
+    arg : State, tuple
         The argument to be parsed and checked for validity. Expects either
-        a State model or a tuple holding the model matrices
-    n : integer {-1,1,2,3,4}
+        a State model or a tuple holding the model matrices.
+    n : int
         If we let A,B,C,D numbered as 1,2,3,4, defines the test scope such
-        that only up to n-th matrix is tested. To test only an A,C use n = -1
+        that only up to n-th matrix is tested. To test only an A,C use n = -1.
 
     Returns
     -------
@@ -3174,52 +3107,211 @@ def _state_or_abcd(arg, n=4):
         True if system and False otherwise
     validated_matrices: ndarray
         The validated n-many 2D arrays.
+
+    Notes
+    -----
+    The n=1 case is just for regularity. Only checks the squareness of A. Also
+    if the args is a tuple and the first element is an empty array then n is
+    assumed to be 4.
     """
+    val_arg = State.validate_arguments
+
+    if n not in [-1, 1, 2, 3, 4]:
+        raise ValueError('n must be one of the [-1, 1, 2, 3, 4] but got {}'
+                         ''.format(n))
     if isinstance(arg, State):
         return True, None
     elif isinstance(arg, tuple):
         system_or_not = False
-        if len(arg) == n or (n == -1 and len(arg) == 2):
-            z, zz = arg[0].shape
-            if n == 1:
-                if z != zz:
-                    raise ValueError('A matrix is not square.')
-                else:
-                    returned_args = arg[0]
-            elif n == 2:
-                m = arg[1].shape[1]
-                returned_args = State.validate_arguments(
-                                *arg,
-                                c=np.zeros((1, z)),
-                                d=np.zeros((1, m))
-                                )[:2]
-            elif n == 3:
-                m = arg[1].shape[1]
-                p = arg[2].shape[0]
-                returned_args = State.validate_arguments(
-                                *arg,
-                                d=np.zeros((p, m)))[:3]
-            elif n == 4:
-                m = arg[1].shape[1]
-                p = arg[2].shape[0]
-                returned_args = State.validate_arguments(*arg)[:4]
-            else:
-                p = arg[1].shape[0]
-                returned_args = tuple(State.validate_arguments(
-                                      arg[0],
-                                      np.zeros((z, 1)),
-                                      arg[1],
-                                      np.zeros((p, 1))
-                                      )[x] for x in [0, 2])
+        # treat static model early, n = 4 necessarily
+        if n != 1 and len(arg) == 1:
+            return system_or_not, (None, None, None, arg[0])
         else:
-            raise ValueError('Not enough elements in the argument to test. '
-                             'Maybe you forgot to modify the n value?')
+            # Start with squareness of a - always given
+            a = arg[0]
+            _assertNdSquareness(a)
+
+            if n == 1:
+                return system_or_not, np.atleast_2d(arg[0])
+            elif n == 2:
+                b = np.atleast_2d(arg[1])
+                n, m = b.shape
+                if n != a.shape[0]:
+                    raise ValueError('b array should have same number of rows'
+                                     'as a. a is {} but b is {}'
+                                     ''.format(a.shape, b.shape))
+                return system_or_not, (a, b)
+            elif n == 3:
+                b = np.atleast_2d(arg[1])
+                n, m = b.shape
+                c = np.atleast_2d(arg[2])
+                p, nc = c.shape
+                if n != a.shape[0]:
+                    raise ValueError('b array should have same number of rows'
+                                     'as a. a is {} but b is {}'
+                                     ''.format(a.shape, b.shape))
+
+                if nc != a.shape[0]:
+                    raise ValueError('c array should have same number of cols'
+                                     'as a. a is {} but c is {}'
+                                     ''.format(a.shape, b.shape))
+
+                return system_or_not, (a, b, c)
+            elif n == 4:
+                a, b, c, d, _, _ = val_arg(*arg)
+                return system_or_not, (a, b, c, d)
+            else:
+                c = np.atleast_2d(arg[1])
+                p, nc = c.shape
+                if nc != a.shape[0]:
+                    raise ValueError('c array should have same number of cols'
+                                     'as a. a is {} but c is {}'
+                                     ''.format(a.shape, b.shape))
+                return system_or_not, (a, c)
     else:
-        raise ValueError('The argument is neither a tuple of arrays nor '
-                         'a State() object. The argument is of the type "{}"'
+        raise ValueError('The argument is neither a tuple nor a State() '
+                         'object. The argument is of the type "{}"'
                          ''.format(type(arg).__qualname__))
 
-    return system_or_not, returned_args
+
+def random_state_model(n, p=1, m=1, dt=None, prob_dist=None, stable=True):
+    """
+    Generates a continuous or discrete State model with random data.
+
+    The poles of the model is selected from randomly generated numbers with a
+    predefined probability assigned to each pick which can also be provided by
+    external array. The specification of the probability is a simple 5-element
+    array-like ``[p0, p1, p2, p3]`` denoting ::
+
+        p0 : Probability of having a real pole
+        p1 : Probability of having a complex pair anywhere except real line
+        p2 : Probability of having an integrator (s or z domain)
+        p3 : Probability of having a pair on the imaginary axis/unit circle
+
+    Hence, ``[1, 0, 0, 0]`` would return a model with only real poles. Notice
+    that the sum of entries should sum up to 1. See numpy.random.choice for
+    more details. The default probabilities are ::
+
+        [p0, p1, p2, p3] = [0.475, 0.475, 0.025, 0.025]
+
+    If ``stable`` keyword is set to True ``prob_dist`` must be 2-entry
+    arraylike denoting only ``[p0, p1]``. The default is uniform i.e. ::
+
+        [p0, p1] = [0.5, 0.5]
+
+    Parameters
+    ----------
+    n : int
+        The number of states. For static models use ``n=0``.
+    p : int, optional
+        The number of outputs. The default is 1
+    m : int, optional
+        The number of inputs. The default is 1
+    prob_dist : arraylike, optional
+        An arraylike with 4 nonnegative entries of which the sum adds up to 1.
+        If ``stable`` key is True then it needs only 2 entries. Internally, it
+        uses ``numpy.random.choice`` for selection.
+    dt : float, optional
+        If ``dt`` is not None, then the value will be used as sampling period
+        to create a discrete time model. This argument must be nonnegative.
+    stable : bool, optional
+        If True a stable model is returned, otherwise stability model would
+        not be checked
+
+    Returns
+    -------
+    G : State
+        The resulting State model
+
+    Notes
+    -----
+    Internally, n, p, m will be converted to integers if possible. This means
+    that no checks about the decimal part will be performed.
+
+    Similarly ``prob_dist`` will be passed directly to a numpy.ndarray with
+    explicitly taking the real part.
+
+    Note that probabilities denote the choice not the distribution of the
+    poles, in other words for a 3-state model, single real pole and a
+    complex pair have the same probability of choice however real pole
+    constitute one third.
+
+    """
+    # Check arguments
+    n, p, m = int(n), int(p), int(m)
+
+    if prob_dist is None:
+        if stable:
+            pdist = np.array([0.5, 0.5])
+        else:
+            pdist = np.array([0.475, 0.475, 0.025, 0.025])
+    else:
+        pdist = _asarray_validated(prob_dist).real
+
+    # pdist will err inside numpy.random.choice so skip checks.
+
+    # Static model
+    if n == 0:
+        return State(rand(p, m), dt=dt)
+    elif n == 1:
+        a, b, c, d = rand(1), rand(1, m), rand(p, 1), rand(p, m)
+        return State(-a, b, c, d, dt=dt)
+
+    # Get random pole types
+    choose_from = [0, 1] if stable else [0, 1, 2, 3]
+    diag_i = 0
+    a = zeros((n, n))
+
+    # Walk over the diagonal of "a"
+    for _ in range(n):
+
+        p_type = choice(choose_from, 1, replace=True, p=pdist)
+        if p_type == 0:
+            ps = choice([1, -1], 1)
+            pr = -exp(exp(rand())) if stable else ps*exp(exp(rand()))
+            a[diag_i, diag_i] = pr
+            diag_i += 1
+
+        elif p_type == 1:
+            if diag_i >= n-1:
+                break
+            ps = choice([1, -1], 1)
+            pr = -exp(exp(rand())) if stable else ps*exp(exp(rand()))
+            pi = exp(exp(rand()))
+            a[[diag_i, diag_i, diag_i+1, diag_i+1],
+              [diag_i, diag_i+1, diag_i, diag_i+1]] = [pr, pi, -pi, pr]
+            diag_i += 2
+
+        elif p_type == 2:
+            a[diag_i, diag_i] = 0.
+            diag_i += 1
+
+        elif p_type == 3:
+            if diag_i >= n-1:
+                break
+            pi = exp(exp(rand()))
+            a[[diag_i, diag_i, diag_i+1, diag_i+1],
+              [diag_i, diag_i+1, diag_i, diag_i+1]] = [0., pi, -pi, 0.]
+            diag_i += 2
+
+        # Finished all diagonals
+        if diag_i == n:
+            break
+
+    # Complex didn't fit, fill the remaining
+    if diag_i == n-1:
+        ps = choice([1, -1], 1)
+        pr = -exp(exp(rand())) if stable else ps*exp(exp(rand()))
+        a[diag_i, diag_i] = pr
+
+    # Convert poles to discrete if dt != None
+    if dt is not None:
+        a = expm(a*dt)
+    # Perform a random similarity transformation to shuffle the data
+    T = ortho_group.rvs(n)
+    a = solve(T, a) @ T
+
+    return State(a, rand(n, m), rand(p, n), rand(p, m), dt=dt)
 
 
 def concatenate_state_matrices(G):

@@ -44,10 +44,7 @@ def haroldlcm(*args, compute_multipliers=True, cleanup_threshold=1e-9):
     of LCM and a list, of which entries are the polynomial
     multipliers to arrive at the LCM of each input element.
 
-    For the multiplier computation, a variant of Karcanias, Mitrouli,
-    *System theoretic based characterisation and computation of the
-    least common multiple of a set of polynomials*, Lin Alg App, 381, 2004,
-    is used.
+    For the multiplier computation, a variant of [1]_ is used.
 
     Parameters
     ----------
@@ -86,8 +83,14 @@ def haroldlcm(*args, compute_multipliers=True, cleanup_threshold=1e-9):
      array([  1.,  -3.,  -6.,   8.]),
      array([  1.,  -3., -12.,  20.,  48.]),
      array([  1.,  -5.,   1.,  21., -18.])]
-    >>> np.convolve([1,3,0,-4],b[0]) # or haroldpolymul() for poly mult
+    >>> np.convolve([1, 3, 0, -4], b[0]) # or haroldpolymul() for poly mult
     (array([   1.,   -7.,    3.,   59.,  -68., -132.,  144.]),
+
+    References
+    ----------
+    .. [1] Karcanias, Mitrouli, "System theoretic based characterisation and
+        computation of the least common multiple of a set of polynomials",
+        2004, :doi:`10.1016/j.laa.2003.11.009`
 
     """
     # Regularize the arguments
@@ -205,8 +208,8 @@ def haroldgcd(*args):
     gcdpoly : ndarray
         Computed GCD of args.
 
-    Example
-    -------
+    Examples
+    --------
     >>> a = haroldgcd(*map(haroldpoly,([-1,-1,-2,-1j,1j],
                                        [-2,-3,-4,-5],
                                        [-2]*10)))
@@ -309,7 +312,7 @@ def haroldcompanion(somearray):
     array([], dtype=float64)
 
     """
-    if not isinstance(somearray, (list, type(np.array([0.])))):
+    if not isinstance(somearray, (list, np.ndarray)):
         raise TypeError('Companion matrices are meant only for '
                         '1D lists or 1D Numpy arrays. I found '
                         'a \"{0}\"'.format(type(somearray).__name__))
@@ -365,8 +368,35 @@ def haroldpoly(rootlist):
 
 def haroldpolyadd(*args, trim_zeros=True):
     """
-    Similar to official polyadd from numpy but allows for
-    multiple args and doesn't invert the order,
+    A wrapper around NumPy's :func:`numpy.polyadd` but allows for multiple
+    args and offers a trimming option.
+
+    Parameters
+    ----------
+    args : iterable
+        An iterable with 1D array-like elements.
+    trim_zeros : bool, optional
+        If True, the zeros at the front of the input and output arrays are
+        truncated. Default is True.
+
+    Returns
+    -------
+    p : ndarray
+        The polynomial coefficients of the sum.
+
+    Examples
+    --------
+    >>> a = np.array([2, 3, 5, 8])
+    >>> b = np.array([1, 3, 4])
+    >>> c = np.array([6, 9, 10, -8, 6])
+    >>> haroldpolyadd(a, b, c)
+    array([ 6., 11., 14.,  0., 18.])
+    >>> d = np.array([-2, -4 ,3, -1])
+    >>> haroldpolyadd(a, b, d)
+    array([ 0.,  0., 11., 11.])
+    >>> haroldpolyadd(a, b, d, trim_zeros=False)
+    array([ 0.,  0., 11., 11.])
+
     """
     if trim_zeros:
         trimmedargs = [np.trim_zeros(x, 'f') for x in args]
@@ -377,14 +407,19 @@ def haroldpolyadd(*args, trim_zeros=True):
     s = np.zeros((1, max(degs)))
     for ind, x in enumerate(trimmedargs):
         s[0, max(degs)-degs[ind]:] += np.real(x)
+
     return s[0]
 
 
 def haroldpolymul(*args, trim_zeros=True):
     """
-    Simple wrapper around the NumPy convolve() function for polynomial
+    Simple wrapper around the :func:`numpy.convolve` function for polynomial
     multiplication with multiple args. The arguments are passed through
     the left zero trimming function first.
+    
+    See Also
+    --------
+    haroldpolydiv, :func:`numpy.convolve`, :func:`scipy.signal.convolve`
 
     Parameters
     ----------
@@ -392,18 +427,18 @@ def haroldpolymul(*args, trim_zeros=True):
         An iterable with 1D array-like elements.
     trim_zeros : bool, optional
         If True, the zeros at the front of the arrays are truncated.
+        Default is True.
 
     Returns
     -------
     p : ndarray
-        The resulting polynomial coefficients.
+        The polynomial coefficients of the product.
 
-    Example
-    -------
+    Examples
+    --------
 
-    >>> haroldpolymul([0,2,0],[0,0,0,1,3,3,1],[0,0.5,0.5])
+    >>> haroldpolymul([0,2,0], [0,0,0,1,3,3,1], [0,0.5,0.5])
     array([ 1.,  4.,  6.,  4.,  1.,  0.])
-
 
     """
 
@@ -425,12 +460,36 @@ def haroldpolymul(*args, trim_zeros=True):
 
 def haroldpolydiv(dividend, divisor):
     """
-    Polynomial division wrapped around scipy deconvolve
+    Polynomial division wrapped around :func:`scipy.signal.deconvolve`
     function. Takes two arguments and divides the first
     by the second.
 
-    Returns, two arguments: the factor and the remainder,
-    both passed through a left zeros trimming function.
+    Parameters
+    ----------
+    dividend : (n,) array_like
+        The polynomial to be divided
+    divisor : (m,) array_like
+        The polynomial that divides
+
+    Returns
+    -------
+    factor : ndarray
+        The resulting polynomial coeffients of the factor
+    remainder : ndarray
+        The resulting polynomial coefficients of the remainder
+
+    Examples
+    --------
+
+    >>> a = np.array([2, 3, 4 ,6])
+    >>> b = np.array([1, 3, 6])
+    >>> haroldpolydiv(a, b)
+    (array([ 2., -3.]), array([ 1., 24.]))
+    >>> c = np.array([1, 3, 3, 1])
+    >>> d = np.array([1, 2, 1])
+    >>> haroldpolydiv(c, d)
+    (array([1., 1.]), array([], dtype=float64))
+
     """
     h_factor, h_remainder = (np.trim_zeros(x, 'f') for x
                              in deconvolve(dividend, divisor))
